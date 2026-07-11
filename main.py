@@ -324,10 +324,12 @@ class ContextBar(Static):
         super().__init__(**kwargs)
         self.used = 0
         self.total = 4096
+        self.model = ""
 
-    def set_usage(self, used: int, total: int) -> None:
+    def set_usage(self, used: int, total: int, model: str = "") -> None:
         self.used = used
         self.total = total
+        self.model = model
         self.refresh()
 
     def render(self) -> Text:
@@ -350,12 +352,15 @@ class ContextBar(Static):
 
         used_label = f"{self.used:,}" if self.used >= 0 else "?"
         total_label = f"{self.total:,}"
-        return Text.assemble(
-            Text(" \u2502 ", style="#585b70"),
-            Text(blocks, style=color),
-            Text(f" {pct:.0f}%", style="#6c7086"),
-            Text(f"  {used_label}/{total_label} ctx", style="#585b70"),
-        )
+        model_label = self.model.split(":")[0] if self.model else ""
+
+        parts = [Text(" ")]
+        if model_label:
+            parts.append(Text(f"\u2502 {model_label} ", style="#585b70"))
+        parts.append(Text(blocks, style=color))
+        parts.append(Text(f" {pct:.0f}%", style="#6c7086"))
+        parts.append(Text(f"  {used_label}/{total_label} ctx", style="#585b70"))
+        return Text.assemble(*parts)
 
 
 def _load_templates() -> list[tuple[str, str]]:
@@ -421,11 +426,15 @@ class OpenCodeTUI(App):
         padding: 0 0;
         background: #1e1e2e;
     }
-    #bottom-bar {
+    #input-wrapper {
         dock: bottom;
-        height: 2;
+        height: 4;
         background: #181825;
-        layout: horizontal;
+        layout: vertical;
+    }
+    #context-bar {
+        height: 1;
+        background: #181825;
     }
     #chat-input {
         background: #313244;
@@ -440,11 +449,6 @@ class OpenCodeTUI(App):
     #chat-input .textual-input-cursor {
         color: #f5c2e7;
     }
-    #input-wrapper {
-        dock: bottom;
-        height: 3;
-        background: #181825;
-    }
     ChatMessage {
         margin: 0 0 0 0;
         padding: 0 1;
@@ -455,9 +459,6 @@ class OpenCodeTUI(App):
         text-align: center;
         margin-top: 3;
         background: #1e1e2e;
-    }
-    #context-bar {
-        background: #181825;
     }
     ActionScreen,
     ModelSelectScreen,
@@ -601,9 +602,6 @@ class OpenCodeTUI(App):
         )
         yield Container(
             ContextBar(id="context-bar"),
-            id="bottom-bar",
-        )
-        yield Container(
             Input(placeholder="Ask a coding question...", id="chat-input"),
             id="input-wrapper",
         )
@@ -647,7 +645,7 @@ class OpenCodeTUI(App):
     def _update_context_bar(self) -> None:
         bar = self.query_one("#context-bar", ContextBar)
         used, total = self._estimate_usage()
-        bar.set_usage(used, total)
+        bar.set_usage(used, total, self.current_model)
 
     def _rebuild_chat(self) -> None:
         container = self.query_one("#chat-container", ScrollableContainer)
