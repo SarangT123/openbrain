@@ -250,6 +250,30 @@ class TemplateSelectScreen(ModalScreen[str | None]):
             self.dismiss(event.item.tpl_name)
 
 
+class ActionScreen(ModalScreen[str]):
+    def compose(self) -> ComposeResult:
+        yield Container(
+            Label("Actions", classes="title"),
+            ListView(id="action-list"),
+            Label("Select an action", classes="hint"),
+            classes="action-dialog",
+        )
+
+    def on_mount(self) -> None:
+        lv = self.query_one("#action-list", ListView)
+        for action, label in [
+            ("system_prompt", "Edit System Prompt"),
+            ("new_session", "New Session"),
+        ]:
+            item = ListItem(Label(label))
+            item.action_name = action
+            lv.append(item)
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if event.item:
+            self.dismiss(event.item.action_name)
+
+
 class ChatMessage(Static):
     def __init__(self, content: str, role: str, model: str = "") -> None:
         self.role = role
@@ -382,11 +406,6 @@ class OpenCodeTUI(App):
         background: #181825;
         layout: horizontal;
     }
-    #context-bar {
-        width: auto;
-        height: 1;
-        padding: 0 0;
-    }
     #chat-input {
         background: #313244;
         color: #cdd6f4;
@@ -408,18 +427,25 @@ class OpenCodeTUI(App):
     ChatMessage {
         margin: 0 0 0 0;
         padding: 0 1;
+        background: #1e1e2e;
     }
     #welcome {
         color: #585b70;
         text-align: center;
         margin-top: 3;
+        background: #1e1e2e;
     }
+    #context-bar {
+        background: #181825;
+    }
+    ActionScreen,
     ModelSelectScreen,
     SystemPromptScreen,
     BranchSelectScreen,
     TemplateSelectScreen {
         background: #11111b;
     }
+    ActionScreen > Container,
     ModelSelectScreen > Container,
     SystemPromptScreen > Container,
     BranchSelectScreen > Container,
@@ -434,7 +460,8 @@ class OpenCodeTUI(App):
     ModelSelectScreen .title,
     SystemPromptScreen .title,
     BranchSelectScreen .title,
-    TemplateSelectScreen .title {
+    TemplateSelectScreen .title,
+    ActionScreen .title {
         text-style: bold;
         color: #b4befe;
         padding-top: 1;
@@ -443,13 +470,15 @@ class OpenCodeTUI(App):
     ModelSelectScreen .hint,
     SystemPromptScreen .hint,
     BranchSelectScreen .hint,
-    TemplateSelectScreen .hint {
+    TemplateSelectScreen .hint,
+    ActionScreen .hint {
         color: #6c7086;
         padding-top: 0;
     }
     ModelSelectScreen ListView,
     BranchSelectScreen ListView,
-    TemplateSelectScreen ListView {
+    TemplateSelectScreen ListView,
+    ActionScreen ListView {
         height: 8;
         border: none;
         background: #313244;
@@ -459,24 +488,28 @@ class OpenCodeTUI(App):
     }
     ModelSelectScreen ListItem,
     BranchSelectScreen ListItem,
-    TemplateSelectScreen ListItem {
+    TemplateSelectScreen ListItem,
+    ActionScreen ListItem {
         background: #313244;
         color: #cdd6f4;
         padding: 0 1;
     }
     ModelSelectScreen ListItem:hover,
     BranchSelectScreen ListItem:hover,
-    TemplateSelectScreen ListItem:hover {
+    TemplateSelectScreen ListItem:hover,
+    ActionScreen ListItem:hover {
         background: #45475a;
     }
     ModelSelectScreen ListView:focus > ListItem:hover,
     BranchSelectScreen ListView:focus > ListItem:hover,
-    TemplateSelectScreen ListView:focus > ListItem:hover {
+    TemplateSelectScreen ListView:focus > ListItem:hover,
+    ActionScreen ListView:focus > ListItem:hover {
         background: #585b70;
     }
     ModelSelectScreen ListView > ListItem:focus,
     BranchSelectScreen ListView > ListItem:focus,
-    TemplateSelectScreen ListView > ListItem:focus {
+    TemplateSelectScreen ListView > ListItem:focus,
+    ActionScreen ListView > ListItem:focus {
         background: #45475a;
     }
     ModelSelectScreen Input {
@@ -510,7 +543,7 @@ class OpenCodeTUI(App):
         Binding("ctrl+m", "change_model", "Model"),
         Binding("ctrl+l", "clear", "Clear"),
         Binding("ctrl+k", "cancel_stream", "Cancel", show=False),
-        Binding("ctrl+p", "system_prompt", "System"),
+        Binding("ctrl+p", "action_screen", "Actions"),
         Binding("ctrl+y", "copy_last", "Copy"),
         Binding("ctrl+up", "edit_last", "Edit"),
         Binding("ctrl+b", "branches", "Branches"),
@@ -627,6 +660,27 @@ class OpenCodeTUI(App):
             self.notify(f"Switched to {cfg.model} \u00b7 {cfg.num_ctx // 1024}k ctx", title="Model Changed")
             self._update_subtitle()
             self._update_context_bar()
+
+    # --- Action Screen ---
+
+    def action_action_screen(self) -> None:
+        self.push_screen(ActionScreen())
+
+    def on_action_screen_dismissed(self, action: str | None) -> None:
+        if action == "system_prompt":
+            self.push_screen(SystemPromptScreen())
+        elif action == "new_session":
+            self.action_new_session()
+
+    def action_new_session(self) -> None:
+        if self._cfg.save_history and self.messages:
+            self._save_session()
+        self._branches = {"main": []}
+        self._active_branch = "main"
+        self._rebuild_chat()
+        self._update_subtitle()
+        self._update_context_bar()
+        self.notify("Started new session", title="Session")
 
     # --- System Prompt ---
 
