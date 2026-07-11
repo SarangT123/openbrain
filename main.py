@@ -564,7 +564,7 @@ class OpenCodeTUI(App):
         Binding("ctrl+m", "change_model", "Model"),
         Binding("ctrl+l", "clear", "Clear"),
         Binding("ctrl+k", "cancel_stream", "Cancel", show=False),
-        Binding("ctrl+p", "action_screen", "Actions"),
+        Binding("ctrl+p", "action_screen", "Actions", priority=True),
         Binding("ctrl+y", "copy_last", "Copy"),
         Binding("ctrl+up", "edit_last", "Edit"),
         Binding("ctrl+b", "branches", "Branches"),
@@ -652,6 +652,9 @@ class OpenCodeTUI(App):
     def _rebuild_chat(self) -> None:
         container = self.query_one("#chat-container", ScrollableContainer)
         container.remove_children()
+        self.call_later(self._finish_rebuild, container)
+    
+    def _finish_rebuild(self, container: ScrollableContainer) -> None:
         self._message_widgets.clear()
         if not self.messages:
             container.mount(
@@ -672,7 +675,7 @@ class OpenCodeTUI(App):
     # --- Model ---
 
     def action_change_model(self) -> None:
-        self.push_screen(ModelSelectScreen())
+        self.push_screen(ModelSelectScreen(), callback=self.on_model_select_screen_dismissed)
 
     def on_model_select_screen_dismissed(self, cfg: ModelConfig) -> None:
         if cfg:
@@ -685,11 +688,11 @@ class OpenCodeTUI(App):
     # --- Action Screen ---
 
     def action_action_screen(self) -> None:
-        self.push_screen(ActionScreen())
+        self.push_screen(ActionScreen(), callback=self.on_action_screen_dismissed)
 
     def on_action_screen_dismissed(self, action: str | None) -> None:
         if action == "system_prompt":
-            self.push_screen(SystemPromptScreen())
+            self.push_screen(SystemPromptScreen(), callback=self.on_system_prompt_screen_dismissed)
         elif action == "new_session":
             self.action_new_session()
 
@@ -698,15 +701,17 @@ class OpenCodeTUI(App):
             self._save_session()
         self._branches = {"main": []}
         self._active_branch = "main"
-        self._rebuild_chat()
         self._update_subtitle()
         self._update_context_bar()
+        self.query_one("#chat-input", Input).value = ""
+        self.query_one("#chat-input", Input).focus()
         self.notify("Started new session", title="Session")
+        self._rebuild_chat()
 
     # --- System Prompt ---
 
     def action_system_prompt(self) -> None:
-        self.push_screen(SystemPromptScreen())
+        self.push_screen(SystemPromptScreen(), callback=self.on_system_prompt_screen_dismissed)
 
     def on_system_prompt_screen_dismissed(self, prompt: str) -> None:
         if prompt is not None and prompt != self.system_prompt:
@@ -720,7 +725,7 @@ class OpenCodeTUI(App):
 
     def action_branches(self) -> None:
         counts = {n: len(msgs) for n, msgs in self._branches.items()}
-        self.push_screen(BranchSelectScreen(counts, self._active_branch))
+        self.push_screen(BranchSelectScreen(counts, self._active_branch), callback=self.on_branch_select_screen_dismissed)
 
     def on_branch_select_screen_dismissed(self, name: str | None) -> None:
         if name and name != self._active_branch:
@@ -756,7 +761,7 @@ class OpenCodeTUI(App):
         if not templates:
             self.notify("No templates found in ~/.config/openbrain/templates/", severity="warning")
             return
-        self.push_screen(TemplateSelectScreen(templates))
+        self.push_screen(TemplateSelectScreen(templates), callback=self.on_template_select_screen_dismissed)
 
     def on_template_select_screen_dismissed(self, name: str | None) -> None:
         if name:
