@@ -342,18 +342,39 @@ class OpenCodeTUI(App):
     Screen {
         background: #1e1e2e;
     }
+    * {
+        scrollbar-color: #45475a;
+        scrollbar-color-hover: #585b70;
+        scrollbar-color-active: #89b4fa;
+    }
     Header {
         background: #181825;
+        color: #cdd6f4;
+    }
+    Header > HeaderClock {
+        color: #6c7086;
+    }
+    Header > HeaderTitle {
         color: #cdd6f4;
     }
     Footer {
         background: #181825;
         color: #6c7086;
     }
+    Footer > FooterKey {
+        color: #f5c2e7;
+    }
+    Footer > FooterSeparator {
+        color: #313244;
+    }
+    Footer > FooterDescription {
+        color: #a6adc8;
+    }
     #chat-container {
         height: 1fr;
         overflow-y: auto;
         padding: 0 0;
+        background: #1e1e2e;
     }
     #bottom-bar {
         dock: bottom;
@@ -367,14 +388,17 @@ class OpenCodeTUI(App):
         padding: 0 0;
     }
     #chat-input {
-        background: #181825;
+        background: #313244;
         color: #cdd6f4;
         border: none;
-        padding: 0 1;
+        padding: 0 2;
         height: 3;
     }
     #chat-input:focus {
         border: none;
+    }
+    #chat-input .textual-input-cursor {
+        color: #f5c2e7;
     }
     #input-wrapper {
         dock: bottom;
@@ -390,12 +414,18 @@ class OpenCodeTUI(App):
         text-align: center;
         margin-top: 3;
     }
+    ModelSelectScreen,
+    SystemPromptScreen,
+    BranchSelectScreen,
+    TemplateSelectScreen {
+        background: #11111b;
+    }
     ModelSelectScreen > Container,
     SystemPromptScreen > Container,
     BranchSelectScreen > Container,
     TemplateSelectScreen > Container {
         background: #1e1e2e;
-        border: thick #89b4fa;
+        border: thick #b4befe;
         padding: 1 2;
         width: 60;
         height: auto;
@@ -406,7 +436,7 @@ class OpenCodeTUI(App):
     BranchSelectScreen .title,
     TemplateSelectScreen .title {
         text-style: bold;
-        color: #89b4fa;
+        color: #b4befe;
         padding-top: 1;
         padding-bottom: 0;
     }
@@ -442,12 +472,20 @@ class OpenCodeTUI(App):
     ModelSelectScreen ListView:focus > ListItem:hover,
     BranchSelectScreen ListView:focus > ListItem:hover,
     TemplateSelectScreen ListView:focus > ListItem:hover {
+        background: #585b70;
+    }
+    ModelSelectScreen ListView > ListItem:focus,
+    BranchSelectScreen ListView > ListItem:focus,
+    TemplateSelectScreen ListView > ListItem:focus {
         background: #45475a;
     }
     ModelSelectScreen Input {
         background: #313244;
         color: #cdd6f4;
         margin-bottom: 0;
+    }
+    ModelSelectScreen Input:focus {
+        border: none;
     }
     SystemPromptScreen TextArea {
         background: #313244;
@@ -458,6 +496,12 @@ class OpenCodeTUI(App):
     }
     SystemPromptScreen TextArea:focus {
         border: none;
+    }
+    SystemPromptScreen TextArea > TextAreaCursor {
+        color: #f5c2e7;
+    }
+    SystemPromptScreen TextArea > TextAreaSelection {
+        background: #585b70;
     }
     """
 
