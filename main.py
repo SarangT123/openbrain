@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import subprocess
 import tomllib
 import uuid
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from ollama import AsyncClient, Client
+from pylatexenc.latex2text import LatexNodes2Text
 from rich.console import Group
 from rich.markdown import Markdown
 from rich.text import Text
@@ -103,6 +105,24 @@ def make_message(role: str, content: str, **kw) -> dict:
     msg = {"id": uuid.uuid4().hex[:12], "role": role, "content": content}
     msg.update(kw)
     return msg
+
+
+_LATEX_CONVERTER = LatexNodes2Text()
+
+
+def _latex_to_text(match: re.Match) -> str:
+    raw = match.group(1)
+    try:
+        converted = _LATEX_CONVERTER.latex_to_text(raw)
+    except Exception:
+        converted = raw
+    return f"`{converted}`"
+
+
+def preprocess_math(text: str) -> str:
+    text = re.sub(r"\$\$(.+?)\$\$", _latex_to_text, text, flags=re.DOTALL)
+    text = re.sub(r"\$(.+?)\$", _latex_to_text, text)
+    return text
 
 
 class ModelSelectScreen(ModalScreen[ModelConfig]):
@@ -289,12 +309,13 @@ class ChatMessage(Static):
                 Text(f" {text}", style="#cdd6f4"),
             )
         label = self.model or "assistant"
+        display = preprocess_math(text) if text else ""
         return Group(
             Text.assemble(
                 Text(" \u2502 ", style="#585b70"),
                 Text(label, style="bold #a6e3a1"),
             ),
-            Markdown(text, code_theme="catppuccin-frappe") if text else "",
+            Markdown(display, code_theme="catppuccin-frappe"),
         )
 
 
