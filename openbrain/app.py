@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 from datetime import datetime
 from pathlib import Path
@@ -21,8 +22,11 @@ from openbrain.screens.template_select import TemplateSelectScreen
 from openbrain.utils import (
     ModelConfig,
     copy_to_clipboard,
+    format_image_info,
+    image_path_to_base64,
     load_templates,
     make_message,
+    read_image_from_clipboard,
 )
 from openbrain.widgets.chat_message import ChatMessage
 from openbrain.widgets.context_bar import ContextBar
@@ -71,7 +75,7 @@ class OpenCodeTUI(App):
     }
     #input-wrapper {
         dock: bottom;
-        height: 4;
+        height: auto;
         background: #181825;
         layout: vertical;
     }
@@ -88,6 +92,13 @@ class OpenCodeTUI(App):
     }
     #chat-input:focus {
         border: none;
+    }
+    #image-indicator {
+        height: 1;
+        background: #313244;
+        color: #f9e2af;
+        padding: 0 2;
+        display: none;
     }
     #chat-input .textual-input-cursor {
         color: #f5c2e7;
@@ -223,6 +234,8 @@ class OpenCodeTUI(App):
         Binding("ctrl+y", "copy_last", "Copy"),
         Binding("ctrl+up", "edit_last", "Edit"),
         Binding("ctrl+b", "branches", "Branches"),
+        Binding("ctrl+g", "paste_image", "Image"),
+        Binding("ctrl+v", "paste_image", "Image", show=False),
         Binding("ctrl+r", "toggle_thinking", "Think"),
         Binding("ctrl+s", "sessions", "Sessions"),
         Binding("ctrl+t", "templates", "Templates"),
@@ -242,6 +255,7 @@ class OpenCodeTUI(App):
         self._message_widgets: dict[str, ChatMessage] = {}
         self._streaming = False
         self._cancel_stream = asyncio.Event()
+        self._pending_image: str | None = None  # base64 image ready to send
         self.system_prompt = self._cfg.system_prompt
         self.show_thinking = self._cfg.show_thinking
         self.client = AsyncClient()
@@ -263,6 +277,7 @@ class OpenCodeTUI(App):
         yield Container(
             ContextBar(id="context-bar"),
             Input(placeholder="Ask a coding question...", id="chat-input"),
+            Label(id="image-indicator"),
             id="input-wrapper",
         )
         yield Footer()
@@ -351,6 +366,27 @@ class OpenCodeTUI(App):
             self.notify("Thinking display OFF", title="Thinking")
         self._rebuild_chat()
 
+    # --- Image Paste ---
+
+    def action_paste_image(self) -> None:
+        data = read_image_from_clipboard()
+        if data is None:
+            self.notify("No image found in clipboard", severity="warning")
+            return
+        b64 = base64.b64encode(data).decode()
+        self._pending_image = b64
+        label = self.query_one("#image-indicator", Label)
+        label.update(f" \U0001f5bc\ufe0f  Image ready  ({len(data) // 1024} KB)")
+        label.styles.display = "block"
+        self.notify("Image pasted from clipboard", title="Image")
+        self.query_one("#chat-input", Input).focus()
+
+    def _drop_pending_image(self) -> None:
+        self._pending_image = None
+        label = self.query_one("#image-indicator", Label)
+        label.update("")
+        label.styles.display = "none"
+
     # --- Chat Rebuild ---
 
     def _rebuild_chat(self) -> None:
@@ -375,6 +411,7 @@ class OpenCodeTUI(App):
                 thinking=msg.get("thinking", ""),
                 show_thinking=self.show_thinking,
                 is_thinking=msg.get("is_thinking", False),
+                images=msg.get("images"),
             )
             container.mount(widget)
             self._message_widgets[msg["id"]] = widget
@@ -410,6 +447,7 @@ class OpenCodeTUI(App):
     def action_new_session(self) -> None:
         if self._cfg.save_history and self.messages:
             self._save_session()
+        self._drop_pending_image()
         self._branches = {"main": []}
         self._active_branch = "main"
         self._update_subtitle()
@@ -569,7 +607,7 @@ class OpenCodeTUI(App):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         user_input = event.value.strip()
         self._editing_idx = None
-        if not user_input:
+        if not user_input and not self._pending_image:
             return
 
         if user_input.startswith("/"):
@@ -597,7 +635,9 @@ class OpenCodeTUI(App):
                         w.remove()
             self._editing_idx = None
 
-        msg = make_message("user", user_input)
+        images = [self._pending_image] if self._pending_image else []
+        self._drop_pending_image()
+        msg = make_message("user", user_input, images=images)
         self.messages.append(msg)
         self._add_message_widget(msg)
         self._update_context_bar()
@@ -614,6 +654,7 @@ class OpenCodeTUI(App):
             thinking=msg.get("thinking", ""),
             show_thinking=self.show_thinking,
             is_thinking=msg.get("is_thinking", False),
+            images=msg.get("images"),
         )
         container.mount(widget)
         self._message_widgets[msg["id"]] = widget
@@ -632,7 +673,10 @@ class OpenCodeTUI(App):
         if self.system_prompt:
             ollama_messages.append({"role": "system", "content": self.system_prompt})
         for m in self.messages[:-1]:
-            ollama_messages.append({"role": m["role"], "content": m["content"]})
+            entry: dict = {"role": m["role"], "content": m["content"]}
+            if m.get("images"):
+                entry["images"] = m["images"]
+            ollama_messages.append(entry)
 
         thinking_blocks: list[str] = []
         content_blocks: list[str] = []
@@ -731,6 +775,20 @@ class OpenCodeTUI(App):
             self.action_fork()
         elif command == "/branches":
             self.action_branches()
+        elif command in ("/image", "/img"):
+            if arg:
+                b64 = image_path_to_base64(arg)
+                if b64:
+                    self._pending_image = b64
+                    path = Path(arg)
+                    label = self.query_one("#image-indicator", Label)
+                    label.update(f" \U0001f5bc\ufe0f  {path.name}  ({path.stat().st_size // 1024} KB)")
+                    label.styles.display = "block"
+                    self.notify(f"Loaded image: {path.name}", title="Image")
+                else:
+                    self.notify(f"Could not load image: {arg}", severity="error")
+            else:
+                self.action_paste_image()
         elif command == "/thinking":
             self.action_toggle_thinking()
         elif command == "/sessions":
@@ -757,6 +815,7 @@ class OpenCodeTUI(App):
             "  /fork            Fork conversation at last message\n"
             "  /branches        Switch branches\n"
             "  /template        Load a prompt template\n"
+            "  /image, /img     Paste image (clipboard or path)\n"
             "  /thinking        Toggle thinking display\n"
             "  /sessions        Browse & load previous sessions\n"
             "  /export          Save session\n"
@@ -768,6 +827,7 @@ class OpenCodeTUI(App):
             "  Ctrl+M   Change model\n"
             "  Ctrl+L   Clear chat\n"
             "  Ctrl+P   System prompt\n"
+            "  Ctrl+G   Paste image\n"
             "  Ctrl+R   Toggle thinking\n"
             "  Ctrl+K   Cancel streaming\n"
             "  Ctrl+Y   Copy last response\n"
