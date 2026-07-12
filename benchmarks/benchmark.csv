@@ -16,4 +16,21 @@ QN,Question,AI ans,Correct ANS,RIGHT?WRONG,Remarks
 \[
 M = \sum^8_{i=1} \sum^7_{j=1} (|a_{i,j+1} - a_{i,j}| + |a_{j+1,i} - a_{j,i}|).
 \]
-Find the remainder when the maximum possible value of $M$ is divided by $1000.$",,896,1
+Find the remainder when the maximum possible value of $M$ is divided by $1000.$",584,896,0,calculate tool
+12,"Triangle $\triangle ABC$ lies in plane $\mathcal P$ with $AB = 6, AC = 4,$ and $\angle BAC = 90^\circ.$ Let $D$ be the reflection across $\overline{BC}$ of the centroid of $\triangle ABC. {}$ Four spheres, all on the same side of $\mathcal P,$ have radii $1, 2, 3,$ and $r$ and are tangent to $\mathcal P$ at points $A, B, C,$ and $D,$ respectively. The four spheres are also each tangent to a second plane $\mathcal T$ and are all on the same side of $\mathcal T.$ The value of $r$ can be written as $\tfrac mn,$ where $m$ and $n$ are relatively prime positive integers. Find $m+n.$",12,161,0,"calculate tool "
+13,"For each positive integer $r$ less than $502,$ define
+\[
+S_r=\sum_{m\ge 0}\dbinom{10000}{502n+r},
+\]
+where $\binom{10000}{n}$ is defined to be $0$ when $n>10000.$ That is, $S_r$ is the sum of all binomial coefficients of the form $\binom{10000}{k}$ for which $0\le k\le 10000$ and $k-r$ is a multiple of $502.$ Find the number of integers in the list $S_0,S_1,\dots,S_{501}$ that are multiples of the prime number $503.$",502,39,0,calculate tool
+14,"  In an equiangular pentagon, the sum of the squares of the side lengths equals $308,$ and the sum of the squares of the diagonal lengths equals $800.$ The square of the perimeter of the pentagon can be expressed as $m \sqrt n,$ where $m$ and $n$ are positive integers and $n$ is not divisible by the square of any prime. Find $m + n.$ ",729,681,0,calculate tool
+15,"Let $a, b,$ and $n$ be positive integers with both $a$ and $b$ greater than or equal to $2$ and less than or equal to $2n$. Define an $a \times b$ cell loop in a $2n \times 2n$ grid of cells to be the $2a + 2b - 4$ cells that surround an $(a - 2) \times (b - 2)$ (possibly empty) rectangle of cells in the grid. For example, the following diagram shows a way to partition a $6 \times 6$ grid of cells into $4$ cell loops.
+
+| P   P P   P | Y   Y |
+| P | R R | P | Y | Y |
+| P | R R | P | Y | Y |
+| P   P P   P | Y | Y |
+| G   G G   G | Y | Y |
+| G   G G   G | Y   Y |
+
+Find the number of ways to partition a $10 \times 10$ grid of cells into $5$ cell loops so that every cell of the grid belongs to exactly one cell loop.",2,83,0,PURE AI
