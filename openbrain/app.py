@@ -13,6 +13,7 @@ from textual.reactive import reactive
 from textual.widgets import Footer, Header, Input, Label
 
 from openbrain.config import DATA_DIR, load_config, save_config_to_disk
+from openbrain.tools import TOOLS, TOOL_DISPATCH
 from openbrain.screens.action import ActionScreen
 from openbrain.screens.branch_select import BranchSelectScreen
 from openbrain.screens.model_select import ModelSelectScreen
@@ -104,9 +105,17 @@ class OpenCodeTUI(App):
         color: #f5c2e7;
     }
     ChatMessage {
-        margin: 0 0 0 0;
-        padding: 0 1;
+        margin: 0 0 1 0;
+        padding: 0 0 1 1;
+        border-left: solid #585b70;
+    }
+    ChatMessage.user {
+        background: #313244;
+        border-left: solid #89b4fa;
+    }
+    ChatMessage.assistant {
         background: #1e1e2e;
+        border-left: solid #a6e3a1;
     }
     #welcome {
         color: #585b70;
@@ -412,6 +421,7 @@ class OpenCodeTUI(App):
                 show_thinking=self.show_thinking,
                 is_thinking=msg.get("is_thinking", False),
                 images=msg.get("images"),
+                tool_calls=msg.get("tool_calls_executed"),
             )
             container.mount(widget)
             self._message_widgets[msg["id"]] = widget
@@ -655,6 +665,7 @@ class OpenCodeTUI(App):
             show_thinking=self.show_thinking,
             is_thinking=msg.get("is_thinking", False),
             images=msg.get("images"),
+            tool_calls=msg.get("tool_calls_executed"),
         )
         container.mount(widget)
         self._message_widgets[msg["id"]] = widget
@@ -678,58 +689,117 @@ class OpenCodeTUI(App):
                 entry["images"] = m["images"]
             ollama_messages.append(entry)
 
-        thinking_blocks: list[str] = []
-        content_blocks: list[str] = []
         raw_buffer = ""
+        tool_iter = 0
+        max_tool_iters = 10
+
         try:
-            gen = await self.client.chat(
-                model=self.current_model,
-                messages=ollama_messages,
-                stream=True,
-                options={"num_ctx": self.current_ctx},
-            )
-            async for part in gen:
-                if self._cancel_stream.is_set():
-                    raw_buffer += "\n\n*[Cancelled]*"
-                    break
-                t_chunk = getattr(part.message, "thinking", None) or ""
-                c_chunk = getattr(part.message, "content", None) or ""
-                if t_chunk:
-                    thinking_blocks.append(t_chunk)
-                if c_chunk:
-                    content_blocks.append(c_chunk)
-                    raw_buffer += c_chunk
-                if t_chunk or c_chunk:
-                    thinking = "".join(thinking_blocks).strip()
-                    if not thinking:
-                        if raw_buffer.strip():
-                            thinking, clean, is_thinking = self._parse_thinking(raw_buffer)
+            while tool_iter < max_tool_iters:
+                thinking_blocks: list[str] = []
+                content_blocks: list[str] = []
+                iter_buffer = ""
+                tool_calls = None
+
+                kwargs: dict = {
+                    "model": self.current_model,
+                    "messages": ollama_messages,
+                    "stream": True,
+                    "options": {"num_ctx": self.current_ctx},
+                }
+                if tool_iter == 0 and TOOLS:
+                    kwargs["tools"] = TOOLS
+
+                gen = await self.client.chat(**kwargs)
+                async for part in gen:
+                    if self._cancel_stream.is_set():
+                        iter_buffer += "\n\n*[Cancelled]*"
+                        break
+                    if part.message.tool_calls:
+                        tool_calls = part.message.tool_calls
+                    t_chunk = getattr(part.message, "thinking", None) or ""
+                    c_chunk = getattr(part.message, "content", None) or ""
+                    if t_chunk:
+                        thinking_blocks.append(t_chunk)
+                    if c_chunk:
+                        content_blocks.append(c_chunk)
+                        iter_buffer += c_chunk
+                    if t_chunk or c_chunk:
+                        thinking = "".join(thinking_blocks).strip()
+                        if not thinking:
+                            if iter_buffer.strip():
+                                thinking, clean, is_thinking = self._parse_thinking(iter_buffer)
+                            else:
+                                clean = ""
+                                is_thinking = False
                         else:
-                            clean = ""
-                            is_thinking = False
-                    else:
-                        clean = "".join(content_blocks).strip()
-                        is_thinking = True
-                    msg["thinking"] = thinking
-                    msg["content"] = clean
-                    msg["is_thinking"] = is_thinking
-                    widget.update_content(
-                        content=clean, thinking=thinking,
-                        show_thinking=self.show_thinking,
-                        is_thinking=is_thinking,
+                            clean = "".join(content_blocks).strip()
+                            is_thinking = not bool(clean)
+                        msg["thinking"] = thinking
+                        msg["content"] = clean
+                        msg["is_thinking"] = is_thinking
+                        widget.update_content(
+                            content=clean, thinking=thinking,
+                            show_thinking=self.show_thinking,
+                            is_thinking=is_thinking,
+                        )
+                        if len(raw_buffer + iter_buffer) % 20 == 0:
+                            container = self.query_one("#chat-container", ScrollableContainer)
+                            container.scroll_end(animate=False)
+                            self._update_context_bar()
+
+                if not tool_calls:
+                    raw_buffer += iter_buffer
+                    break
+
+                assistant_msg = {
+                    "role": "assistant",
+                    "content": "".join(content_blocks).strip(),
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments
+                                if isinstance(tc.function.arguments, dict)
+                                else {},
+                            }
+                        }
+                        for tc in tool_calls
+                    ],
+                }
+                ollama_messages.append(assistant_msg)
+
+                for tc in tool_calls:
+                    fn = tc.function.name
+                    args = (
+                        tc.function.arguments
+                        if isinstance(tc.function.arguments, dict)
+                        else {}
                     )
-                    if len(raw_buffer) % 20 == 0:
-                        container = self.query_one("#chat-container", ScrollableContainer)
-                        container.scroll_end(animate=False)
-                        self._update_context_bar()
+                    widget.add_tool_call(fn, args)
+                    handler = TOOL_DISPATCH.get(fn)
+                    result = (
+                        await handler(**args)
+                        if handler
+                        else f"Unknown tool: {fn}"
+                    )
+                    widget.set_tool_done(fn)
+                    ollama_messages.append({
+                        "role": "tool",
+                        "content": result,
+                        "name": fn,
+                    })
+
+                msg["tool_calls_executed"] = [
+                    {"name": tc["name"], "args": tc["args"]}
+                    for tc in widget._tool_calls
+                ]
+                raw_buffer += iter_buffer
+                tool_iter += 1
         except Exception as e:
+            content_blocks = [raw_buffer] if raw_buffer else []
             content_blocks.append(f"\n\n**Error:** {e}")
-            re_thinking = "".join(thinking_blocks).strip()
             re_buffer = raw_buffer + f"\n\n**Error:** {e}"
-            if re_thinking:
-                re_clean = "".join(content_blocks).strip()
-            else:
-                re_thinking, re_clean, _ = self._parse_thinking(re_buffer)
+            re_thinking, re_clean, _ = self._parse_thinking(re_buffer)
             msg["thinking"] = re_thinking
             msg["content"] = re_clean
             widget.update_content(content=re_clean, thinking=re_thinking)
