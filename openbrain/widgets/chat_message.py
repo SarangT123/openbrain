@@ -58,10 +58,12 @@ class ChatMessage(Static):
             return
         if self._thinking and not self._is_thinking:
             self._thinking_expanded = not self._thinking_expanded
-            self.refresh()
+            self.refresh(layout=True)
+            self.scroll_visible()
         elif "$$" in self.content:
             self._show_source = not self._show_source
-            self.refresh()
+            self.refresh(layout=True)
+            self.scroll_visible()
 
     def render(self) -> Text | Group:
         text = str(self.content)
@@ -87,9 +89,13 @@ class ChatMessage(Static):
             Text.assemble(Text("  "), Text(label, style="bold #a6e3a1")),
         ]
         has_section = False
-        if self._is_thinking:
+        if self._is_thinking and self._thinking:
             elements.append(Text(""))
-            elements.append(_indent(Text("\U0001f4ad  Reasoning...", style="dim #585b70")))
+            elements.append(_indent(Markdown(self._thinking, style="dim #585b70")))
+            has_section = True
+        elif self._is_thinking:
+            elements.append(Text(""))
+            elements.append(_indent(Text("\U0001f4ad  Thinking...", style="dim #585b70")))
             has_section = True
         elif self._show_thinking and self._thinking:
             elements.append(Text(""))

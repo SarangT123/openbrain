@@ -10,14 +10,15 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, ScrollableContainer
 from textual.reactive import reactive
-from textual.widgets import Footer, Header, Input, Label
+from textual.widgets import Footer, Header, Input, Label, TextArea
 
-from openbrain.config import DATA_DIR, load_config, save_config_to_disk
+from openbrain.config import DATA_DIR, DEFAULT_SYSTEM_PROMPT, load_config, save_config_to_disk
 from openbrain.tools import TOOLS, TOOL_DISPATCH
 from openbrain.screens.action import ActionScreen
 from openbrain.screens.branch_select import BranchSelectScreen
 from openbrain.screens.model_select import ModelSelectScreen
 from openbrain.screens.session_list import SessionListScreen
+from openbrain.screens.rename_session import RenameSessionScreen
 from openbrain.screens.system_prompt import SystemPromptScreen
 from openbrain.screens.template_select import TemplateSelectScreen
 from openbrain.utils import (
@@ -77,6 +78,7 @@ class OpenCodeTUI(App):
     #input-wrapper {
         dock: bottom;
         height: auto;
+        max-height: 13;
         background: #181825;
         layout: vertical;
     }
@@ -88,11 +90,24 @@ class OpenCodeTUI(App):
         background: #313244;
         color: #cdd6f4;
         border: none;
-        padding: 0 2;
-        height: 3;
+        margin: 0;
+        height: auto;
+        min-height: 3;
+        max-height: 12;
     }
     #chat-input:focus {
         border: none;
+    }
+    #chat-input > TextAreaCursor {
+        color: #f5c2e7;
+    }
+    #chat-input > TextAreaSelection {
+        background: #585b70;
+    }
+    #chat-input .textual-textarea-scrollbar {
+        scrollbar-color: #45475a;
+        scrollbar-color-hover: #585b70;
+        scrollbar-color-active: #89b4fa;
     }
     #image-indicator {
         height: 1;
@@ -100,9 +115,6 @@ class OpenCodeTUI(App):
         color: #f9e2af;
         padding: 0 2;
         display: none;
-    }
-    #chat-input .textual-input-cursor {
-        color: #f5c2e7;
     }
     ChatMessage {
         margin: 0 0 1 0;
@@ -135,6 +147,7 @@ class OpenCodeTUI(App):
     SystemPromptScreen > Container,
     BranchSelectScreen > Container,
     TemplateSelectScreen > Container,
+    RenameSessionScreen > Container,
     SessionListScreen > Container {
         background: #1e1e2e;
         border: thick #b4befe;
@@ -148,6 +161,7 @@ class OpenCodeTUI(App):
     BranchSelectScreen .title,
     TemplateSelectScreen .title,
     ActionScreen .title,
+    RenameSessionScreen .title,
     SessionListScreen .title {
         text-style: bold;
         color: #b4befe;
@@ -159,9 +173,19 @@ class OpenCodeTUI(App):
     BranchSelectScreen .hint,
     TemplateSelectScreen .hint,
     ActionScreen .hint,
-    SessionListScreen .hint {
+    SessionListScreen .hint,
+    RenameSessionScreen .hint {
         color: #6c7086;
         padding-top: 0;
+    }
+    RenameSessionScreen Input {
+        background: #313244;
+        color: #cdd6f4;
+        border: none;
+        margin-bottom: 0;
+    }
+    RenameSessionScreen Input:focus {
+        border: none;
     }
     ModelSelectScreen ListView,
     BranchSelectScreen ListView,
@@ -248,10 +272,14 @@ class OpenCodeTUI(App):
         Binding("ctrl+r", "toggle_thinking", "Think"),
         Binding("ctrl+s", "sessions", "Sessions"),
         Binding("ctrl+t", "templates", "Templates"),
+        Binding("ctrl+left", "predict_down", "Pred-", show=False),
+        Binding("ctrl+right", "predict_up", "Pred+", show=False),
+        Binding("ctrl+enter", "submit_input", "Send", show=False),
     ]
 
     current_model: reactive[str] = reactive("")
     current_ctx: reactive[int] = reactive(4096)
+    current_predict: reactive[int] = reactive(8192)
     show_thinking: reactive[bool] = reactive(True)
 
     # --- Lifecycle ---
@@ -265,8 +293,9 @@ class OpenCodeTUI(App):
         self._streaming = False
         self._cancel_stream = asyncio.Event()
         self._pending_image: str | None = None  # base64 image ready to send
-        self.system_prompt = self._cfg.system_prompt
+        self.system_prompt = self._cfg.system_prompt or DEFAULT_SYSTEM_PROMPT
         self.show_thinking = self._cfg.show_thinking
+        self.current_predict = self._cfg.default_predict
         self.client = AsyncClient()
 
     @property
@@ -285,16 +314,19 @@ class OpenCodeTUI(App):
         )
         yield Container(
             ContextBar(id="context-bar"),
-            Input(placeholder="Ask a coding question...", id="chat-input"),
+            TextArea(placeholder="Ask a coding question... (Ctrl+Enter to send)", id="chat-input", compact=True, highlight_cursor_line=False),
             Label(id="image-indicator"),
             id="input-wrapper",
         )
         yield Footer()
 
     def on_mount(self) -> None:
+        if self._cfg.auto_restore:
+            self._restore_latest_session()
         if self._cfg.default_model:
             self.current_model = self._cfg.default_model
             self.current_ctx = self._cfg.default_ctx
+            self.current_predict = self._cfg.default_predict
         else:
             try:
                 models = Client().list()["models"]
@@ -304,11 +336,8 @@ class OpenCodeTUI(App):
                 pass
         self._update_subtitle()
 
-        if self._cfg.auto_restore:
-            self._restore_latest_session()
-
         if not self.current_model:
-            self.query_one("#chat-input", Input).focus()
+            self.query_one("#chat-input", TextArea).focus()
         self._update_context_bar()
 
     # --- Subtitle ---
@@ -335,6 +364,7 @@ class OpenCodeTUI(App):
         used, total = self._estimate_usage()
         bar.set_usage(used, total, self.current_model)
         bar.set_thinking_visible(self.show_thinking)
+        bar.set_predict(self.current_predict)
 
     # --- Thinking ---
 
@@ -375,6 +405,34 @@ class OpenCodeTUI(App):
             self.notify("Thinking display OFF", title="Thinking")
         self._rebuild_chat()
 
+    # --- Predict ---
+
+    PREDICT_PRESETS = [0, 512, 1024, 2048, 4096, 8192, 16384]
+
+    def action_predict_down(self) -> None:
+        presets = self.PREDICT_PRESETS
+        cur = self.current_predict
+        i = presets.index(cur) if cur in presets else max(i for i, v in enumerate(presets) if v < cur)
+        if i > 0:
+            self.current_predict = presets[i - 1]
+        elif cur > 0:
+            self.current_predict = 0
+        self._update_context_bar()
+        lbl = f"{self.current_predict:,}" if self.current_predict > 0 else "\u221e"
+        self.notify(f"Max tokens set to {lbl}", title="Predict")
+
+    def action_predict_up(self) -> None:
+        presets = self.PREDICT_PRESETS
+        cur = self.current_predict
+        i = presets.index(cur) if cur in presets else max(i for i, v in enumerate(presets) if v <= cur)
+        if i < len(presets) - 1:
+            self.current_predict = presets[i + 1]
+        elif cur >= presets[-1]:
+            self.current_predict = 0
+        self._update_context_bar()
+        lbl = f"{self.current_predict:,}" if self.current_predict > 0 else "\u221e"
+        self.notify(f"Max tokens set to {lbl}", title="Predict")
+
     # --- Image Paste ---
 
     def action_paste_image(self) -> None:
@@ -388,7 +446,7 @@ class OpenCodeTUI(App):
         label.update(f" \U0001f5bc\ufe0f  Image ready  ({len(data) // 1024} KB)")
         label.styles.display = "block"
         self.notify("Image pasted from clipboard", title="Image")
-        self.query_one("#chat-input", Input).focus()
+        self.query_one("#chat-input", TextArea).focus()
 
     def _drop_pending_image(self) -> None:
         self._pending_image = None
@@ -462,8 +520,8 @@ class OpenCodeTUI(App):
         self._active_branch = "main"
         self._update_subtitle()
         self._update_context_bar()
-        self.query_one("#chat-input", Input).value = ""
-        self.query_one("#chat-input", Input).focus()
+        self.query_one("#chat-input", TextArea).text = ""
+        self.query_one("#chat-input", TextArea).focus()
         self.notify("Started new session", title="Session")
         self._rebuild_chat()
 
@@ -484,7 +542,8 @@ class OpenCodeTUI(App):
             return
         self.current_model = data.get("model", self.current_model)
         self.current_ctx = data.get("num_ctx", self.current_ctx)
-        self.system_prompt = data.get("system_prompt", self.system_prompt)
+        self.current_predict = data.get("num_predict", self.current_predict)
+        self.system_prompt = data.get("system_prompt", self.system_prompt) or DEFAULT_SYSTEM_PROMPT
         if "show_thinking" in data:
             self.show_thinking = data["show_thinking"]
             self._cfg.show_thinking = self.show_thinking
@@ -495,7 +554,7 @@ class OpenCodeTUI(App):
         self._rebuild_chat()
         self._update_subtitle()
         self._update_context_bar()
-        self.query_one("#chat-input", Input).focus()
+        self.query_one("#chat-input", TextArea).focus()
         self.notify("Session loaded", title="Session")
 
     # --- System Prompt ---
@@ -505,7 +564,7 @@ class OpenCodeTUI(App):
 
     def on_system_prompt_screen_dismissed(self, prompt: str) -> None:
         if prompt is not None and prompt != self.system_prompt:
-            self.system_prompt = prompt
+            self.system_prompt = prompt or DEFAULT_SYSTEM_PROMPT
             self._cfg.system_prompt = prompt
             save_config_to_disk(self._cfg)
             self.notify("System prompt updated", title="System Prompt")
@@ -529,7 +588,7 @@ class OpenCodeTUI(App):
         self._update_subtitle()
         self._update_context_bar()
         self.notify(f"Switched to branch '{name}'", title="Branch")
-        self.query_one("#chat-input", Input).focus()
+        self.query_one("#chat-input", TextArea).focus()
 
     def action_fork(self, msg_index: int | None = None) -> None:
         if msg_index is None:
@@ -558,8 +617,8 @@ class OpenCodeTUI(App):
             templates = dict(load_templates())
             prompt = templates.get(name, "")
             if prompt:
-                inp = self.query_one("#chat-input", Input)
-                inp.value = prompt
+                inp = self.query_one("#chat-input", TextArea)
+                inp.text = prompt
                 inp.focus()
 
     # --- Clear ---
@@ -568,7 +627,7 @@ class OpenCodeTUI(App):
         self._branches[self._active_branch].clear()
         self._rebuild_chat()
         self._update_context_bar()
-        self.query_one("#chat-input", Input).focus()
+        self.query_one("#chat-input", TextArea).focus()
 
     # --- Clipboard ---
 
@@ -607,29 +666,30 @@ class OpenCodeTUI(App):
                 break
         if last_user_idx is None:
             return
-        inp = self.query_one("#chat-input", Input)
-        inp.value = self.messages[last_user_idx]["content"]
+        inp = self.query_one("#chat-input", TextArea)
+        inp.text = self.messages[last_user_idx]["content"]
         inp.focus()
         self._editing_idx = last_user_idx
 
     # --- Input ---
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        user_input = event.value.strip()
+    def action_submit_input(self) -> None:
+        inp = self.query_one("#chat-input", TextArea)
+        user_input = inp.text.strip()
         self._editing_idx = None
         if not user_input and not self._pending_image:
             return
 
         if user_input.startswith("/"):
             self._handle_slash_command(user_input)
-            event.input.clear()
+            inp.text = ""
             return
 
         if not self.current_model:
             self.notify("Select a model with Ctrl+M first", title="No model", severity="error")
             return
 
-        event.input.clear()
+        inp.text = ""
 
         editing_idx = getattr(self, "_editing_idx", None)
         if editing_idx is not None:
@@ -694,33 +754,44 @@ class OpenCodeTUI(App):
         max_tool_iters = 10
 
         try:
+            thinking_blocks: list[str] = []
+            content_blocks: list[str] = []
+            iter_buffer = ""
+            needs_reset = True
+
             while tool_iter < max_tool_iters:
-                thinking_blocks: list[str] = []
-                content_blocks: list[str] = []
-                iter_buffer = ""
+                if needs_reset:
+                    thinking_blocks.clear()
+                    content_blocks.clear()
+                    iter_buffer = ""
+                needs_reset = True
                 tool_calls = None
 
                 kwargs: dict = {
                     "model": self.current_model,
                     "messages": ollama_messages,
                     "stream": True,
-                    "options": {"num_ctx": self.current_ctx},
+                    "options": {"num_ctx": self.current_ctx, "num_predict": self.current_predict if self.current_predict > 0 else -1},
                 }
-                if tool_iter == 0 and TOOLS:
+                if TOOLS:
                     kwargs["tools"] = TOOLS
 
                 gen = await self.client.chat(**kwargs)
+                done_reason = "stop"
                 async for part in gen:
                     if self._cancel_stream.is_set():
                         iter_buffer += "\n\n*[Cancelled]*"
+                        done_reason = "cancel"
                         break
                     if part.message.tool_calls:
                         tool_calls = part.message.tool_calls
+                    done_reason = getattr(part, "done_reason", "stop") or "stop"
                     t_chunk = getattr(part.message, "thinking", None) or ""
                     c_chunk = getattr(part.message, "content", None) or ""
                     if t_chunk:
                         thinking_blocks.append(t_chunk)
                     if c_chunk:
+                        c_chunk = c_chunk.replace("<channel|>", "")
                         content_blocks.append(c_chunk)
                         iter_buffer += c_chunk
                     if t_chunk or c_chunk:
@@ -749,7 +820,35 @@ class OpenCodeTUI(App):
 
                 if not tool_calls:
                     raw_buffer += iter_buffer
+                    if done_reason == "length" and (iter_buffer.strip() or "".join(thinking_blocks).strip()):
+                        content = iter_buffer.strip()
+                        thinking_text = "".join(thinking_blocks).strip()
+                        entry = {"role": "assistant", "content": content}
+                        if thinking_text:
+                            entry["thinking"] = thinking_text
+                        ollama_messages.append(entry)
+                        msg["content"] = content
+                        msg["thinking"] = thinking_text
+                        msg["is_thinking"] = bool(thinking_text) and not bool(content)
+                        widget.update_content(
+                            content=content, thinking=thinking_text,
+                            show_thinking=self.show_thinking,
+                            is_thinking=msg["is_thinking"],
+                        )
+                        needs_reset = False
+                        tool_iter += 1
+                        continue
                     break
+
+                def _resolve_args(arg_val) -> dict:
+                    if isinstance(arg_val, dict):
+                        return arg_val
+                    if isinstance(arg_val, str):
+                        try:
+                            return json.loads(arg_val)
+                        except json.JSONDecodeError:
+                            return {}
+                    return {}
 
                 assistant_msg = {
                     "role": "assistant",
@@ -758,9 +857,7 @@ class OpenCodeTUI(App):
                         {
                             "function": {
                                 "name": tc.function.name,
-                                "arguments": tc.function.arguments
-                                if isinstance(tc.function.arguments, dict)
-                                else {},
+                                "arguments": _resolve_args(tc.function.arguments),
                             }
                         }
                         for tc in tool_calls
@@ -770,11 +867,7 @@ class OpenCodeTUI(App):
 
                 for tc in tool_calls:
                     fn = tc.function.name
-                    args = (
-                        tc.function.arguments
-                        if isinstance(tc.function.arguments, dict)
-                        else {}
-                    )
+                    args = _resolve_args(tc.function.arguments)
                     widget.add_tool_call(fn, args)
                     handler = TOOL_DISPATCH.get(fn)
                     result = (
@@ -804,6 +897,7 @@ class OpenCodeTUI(App):
             msg["content"] = re_clean
             widget.update_content(content=re_clean, thinking=re_thinking)
 
+        raw_buffer = raw_buffer.replace("<channel|>", "")
         msg["raw"] = raw_buffer
         container = self.query_one("#chat-container", ScrollableContainer)
         container.scroll_end(animate=False)
@@ -832,8 +926,20 @@ class OpenCodeTUI(App):
                     self.notify(f"Context window set to {int(arg):,}", title="Context")
                 except ValueError:
                     self.notify("Usage: /ctx <number>", severity="warning")
+                else:
+                    self.notify(f"Current context: {self.current_ctx:,}", title="Context")
+        elif command == "/predict":
+            if arg:
+                try:
+                    self.current_predict = int(arg)
+                    self._update_context_bar()
+                    lbl = f"{int(arg):,}" if int(arg) > 0 else "\u221e"
+                    self.notify(f"Max tokens set to {lbl}", title="Predict")
+                except ValueError:
+                    self.notify("Usage: /predict <number> (0 = unlimited)", severity="warning")
             else:
-                self.notify(f"Current context: {self.current_ctx:,}", title="Context")
+                lbl = f"{self.current_predict:,}" if self.current_predict > 0 else "\u221e"
+                self.notify(f"Current predict: {lbl}", title="Predict")
         elif command == "/system":
             self.action_system_prompt()
         elif command == "/export":
@@ -881,6 +987,7 @@ class OpenCodeTUI(App):
             "  /clear, /cls    Clear chat\n"
             "  /model           Change model\n"
             "  /ctx <n>         Set context window\n"
+            "  /predict <n>     Set max tokens (0 = unlimited)\n"
             "  /system          Edit system prompt\n"
             "  /fork            Fork conversation at last message\n"
             "  /branches        Switch branches\n"
@@ -911,6 +1018,18 @@ class OpenCodeTUI(App):
 
     # --- Persistence ---
 
+    @staticmethod
+    def _generate_session_name(branches: dict[str, list[dict]], active_branch: str) -> str:
+        msgs = branches.get(active_branch, [])
+        for m in msgs:
+            if m.get("role") == "user":
+                text = m["content"].strip()
+                name = text[:55].replace("\n", " ").strip()
+                if len(text) > 55:
+                    name += "..."
+                return name if name else "Untitled"
+        return "Untitled"
+
     def _session_path(self) -> Path:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         return DATA_DIR / f"session-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
@@ -918,8 +1037,10 @@ class OpenCodeTUI(App):
     def _save_session(self) -> None:
         path = self._session_path()
         data = {
+            "name": self._generate_session_name(self._branches, self._active_branch),
             "model": self.current_model,
             "num_ctx": self.current_ctx,
+            "num_predict": self.current_predict,
             "system_prompt": self.system_prompt,
             "active_branch": self._active_branch,
             "branches": self._branches,
@@ -943,7 +1064,8 @@ class OpenCodeTUI(App):
             data = json.loads(sessions[0].read_text())
             self.current_model = data.get("model", self.current_model)
             self.current_ctx = data.get("num_ctx", self.current_ctx)
-            self.system_prompt = data.get("system_prompt", self.system_prompt)
+            self.current_predict = data.get("num_predict", self.current_predict)
+            self.system_prompt = data.get("system_prompt", self.system_prompt) or DEFAULT_SYSTEM_PROMPT
             if "show_thinking" in data:
                 self.show_thinking = data["show_thinking"]
                 self._cfg.show_thinking = self.show_thinking

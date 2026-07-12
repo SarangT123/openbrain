@@ -25,7 +25,7 @@ def copy_to_clipboard(text: str) -> bool:
     return False
 
 
-CONTEXT_PRESETS = [2048, 4096, 8192, 16384, 32768, 65536, 131072]
+CONTEXT_PRESETS = [2048, 4096, 8192, 16384, 32768, 65536, 80000, 131072]
 
 
 @dataclass
