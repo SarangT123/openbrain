@@ -15,6 +15,8 @@ from textual.widgets import Footer, Header, Input, Label, TextArea
 from openbrain.config import DATA_DIR, DEFAULT_SYSTEM_PROMPT, load_config, save_config_to_disk
 from openbrain.tools import TOOLS, TOOL_DISPATCH
 from openbrain.screens.action import ActionScreen
+from openbrain.screens.agent_settings import AgentSettingsScreen
+from openbrain.screens.benchmark import BenchmarkScreen
 from openbrain.screens.branch_select import BranchSelectScreen
 from openbrain.screens.model_select import ModelSelectScreen
 from openbrain.screens.session_list import SessionListScreen
@@ -139,7 +141,9 @@ class OpenCodeTUI(App):
     ModelSelectScreen,
     SystemPromptScreen,
     BranchSelectScreen,
-    SessionListScreen {
+    SessionListScreen,
+    AgentSettingsScreen,
+    BenchmarkScreen {
         background: #11111b;
     }
     ActionScreen > Container,
@@ -148,7 +152,9 @@ class OpenCodeTUI(App):
     BranchSelectScreen > Container,
     TemplateSelectScreen > Container,
     RenameSessionScreen > Container,
-    SessionListScreen > Container {
+    SessionListScreen > Container,
+    AgentSettingsScreen > Container,
+    BenchmarkScreen > Container {
         background: #1e1e2e;
         border: thick #b4befe;
         padding: 1 2;
@@ -162,7 +168,9 @@ class OpenCodeTUI(App):
     TemplateSelectScreen .title,
     ActionScreen .title,
     RenameSessionScreen .title,
-    SessionListScreen .title {
+    SessionListScreen .title,
+    AgentSettingsScreen .title,
+    BenchmarkScreen .title {
         text-style: bold;
         color: #b4befe;
         padding-top: 1;
@@ -174,7 +182,9 @@ class OpenCodeTUI(App):
     TemplateSelectScreen .hint,
     ActionScreen .hint,
     SessionListScreen .hint,
-    RenameSessionScreen .hint {
+    RenameSessionScreen .hint,
+    AgentSettingsScreen .hint,
+    BenchmarkScreen .hint {
         color: #6c7086;
         padding-top: 0;
     }
@@ -186,6 +196,42 @@ class OpenCodeTUI(App):
     }
     RenameSessionScreen Input:focus {
         border: none;
+    }
+    AgentSettingsScreen Input,
+    BenchmarkScreen Input {
+        background: #313244;
+        color: #cdd6f4;
+        border: none;
+        margin-bottom: 0;
+        width: 20;
+    }
+    AgentSettingsScreen Input:focus,
+    BenchmarkScreen Input:focus {
+        border: none;
+    }
+    AgentSettingsScreen Horizontal,
+    BenchmarkScreen Horizontal {
+        height: 3;
+        align: left middle;
+        margin-bottom: 0;
+    }
+    AgentSettingsScreen Horizontal > Label,
+    BenchmarkScreen Horizontal > Label {
+        width: 30;
+        color: #a6adc8;
+    }
+    BenchmarkScreen Switch {
+        margin-left: 30;
+    }
+    BenchmarkScreen Button {
+        margin-right: 1;
+    }
+    BenchmarkScreen #bench-log {
+        background: #11111b;
+        color: #cdd6f4;
+        border: solid #45475a;
+        height: 10;
+        margin-top: 1;
     }
     ModelSelectScreen ListView,
     BranchSelectScreen ListView,
@@ -511,6 +557,10 @@ class OpenCodeTUI(App):
             self.action_sessions()
         elif action == "new_session":
             self.action_new_session()
+        elif action == "agent_settings":
+            self.push_screen(AgentSettingsScreen(), callback=self.on_agent_settings_dismissed)
+        elif action == "benchmark":
+            self.push_screen(BenchmarkScreen(), callback=self.on_benchmark_screen_dismissed)
 
     def action_new_session(self) -> None:
         if self._cfg.save_history and self.messages:
@@ -569,6 +619,16 @@ class OpenCodeTUI(App):
             save_config_to_disk(self._cfg)
             self.notify("System prompt updated", title="System Prompt")
             self._update_context_bar()
+
+    def on_agent_settings_dismissed(self, data: dict | None) -> None:
+        if data is not None:
+            for key, value in data.items():
+                setattr(self._cfg, key, value)
+            save_config_to_disk(self._cfg)
+            self.notify("Agent settings saved", title="Settings")
+
+    def on_benchmark_screen_dismissed(self, _: None) -> None:
+        pass
 
     # --- Branches ---
 
@@ -752,6 +812,8 @@ class OpenCodeTUI(App):
         raw_buffer = ""
         tool_iter = 0
         max_tool_iters = 10
+        forced_retries_used = 0
+        calc_streak = 0
 
         try:
             thinking_blocks: list[str] = []
@@ -771,8 +833,11 @@ class OpenCodeTUI(App):
                     "model": self.current_model,
                     "messages": ollama_messages,
                     "stream": True,
-                    "options": {"num_ctx": self.current_ctx, "num_predict": self.current_predict if self.current_predict > 0 else -1},
+                    "options": {"num_ctx": self.current_ctx, "num_predict": self.current_predict if self.current_predict > 0 else -1, "temperature": self._cfg.temperature},
+                    "keep_alive": self._cfg.keep_alive,
                 }
+                if self._cfg.seed != -1:
+                    kwargs["options"]["seed"] = self._cfg.seed
                 if TOOLS:
                     kwargs["tools"] = TOOLS
 
@@ -820,6 +885,19 @@ class OpenCodeTUI(App):
 
                 if not tool_calls:
                     raw_buffer += iter_buffer
+                    if self._cfg.force_tool_use and tool_iter == 0 and forced_retries_used < self._cfg.force_tool_retry_limit:
+                        forced_retries_used += 1
+                        ollama_messages.append({
+                            "role": "user",
+                            "content": (
+                                "You answered without calling any tool. Re-derive this "
+                                "step by step, calling run_python or sympy_calc to verify "
+                                "each step, before giving your final answer."
+                            ),
+                        })
+                        tool_iter += 1
+                        needs_reset = False
+                        continue
                     if done_reason == "length" and (iter_buffer.strip() or "".join(thinking_blocks).strip()):
                         content = iter_buffer.strip()
                         thinking_text = "".join(thinking_blocks).strip()
@@ -869,6 +947,10 @@ class OpenCodeTUI(App):
                     fn = tc.function.name
                     args = _resolve_args(tc.function.arguments)
                     widget.add_tool_call(fn, args)
+                    if fn == "calculate":
+                        calc_streak += 1
+                    elif fn in ("run_python", "sympy_calc"):
+                        calc_streak = 0
                     handler = TOOL_DISPATCH.get(fn)
                     result = (
                         await handler(**args)
@@ -882,6 +964,17 @@ class OpenCodeTUI(App):
                         "name": fn,
                     })
 
+                if self._cfg.calc_guard_enabled and calc_streak >= self._cfg.calc_guard_threshold:
+                    calc_streak = 0
+                    ollama_messages.append({
+                        "role": "user",
+                        "content": (
+                            "You've used calculate several times without verifying with "
+                            "run_python — brute-force or simulate this to confirm your "
+                            "derivation."
+                        ),
+                    })
+
                 msg["tool_calls_executed"] = [
                     {"name": tc["name"], "args": tc["args"]}
                     for tc in widget._tool_calls
@@ -889,9 +982,17 @@ class OpenCodeTUI(App):
                 raw_buffer += iter_buffer
                 tool_iter += 1
         except Exception as e:
+            err_msg = str(e)
+            if "out of memory" in err_msg.lower() or "oom" in err_msg.lower():
+                err_msg = (
+                    f"**Out of VRAM:** {err_msg}\n\n"
+                    f"The model `{self.current_model}` does not fit in available GPU memory. "
+                    "Try a smaller model, set keep_alive='0' to unload other models, "
+                    "or free system memory."
+                )
             content_blocks = [raw_buffer] if raw_buffer else []
-            content_blocks.append(f"\n\n**Error:** {e}")
-            re_buffer = raw_buffer + f"\n\n**Error:** {e}"
+            content_blocks.append(f"\n\n**Error:** {err_msg}")
+            re_buffer = raw_buffer + f"\n\n**Error:** {err_msg}"
             re_thinking, re_clean, _ = self._parse_thinking(re_buffer)
             msg["thinking"] = re_thinking
             msg["content"] = re_clean

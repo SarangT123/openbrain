@@ -267,7 +267,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "calculate",
-            "description": "Evaluate a numerical expression and return the result. Supports arithmetic (+, -, *, /, **, //, %), trig (sin, cos, tan, asin, acos, atan, atan2), log/exp (log, log10, log2, exp), constants (pi, e, tau, inf), sqrt, abs, floor, ceil, factorial, degrees/radians, and parentheses. Use this for quick numeric calculations instead of writing a full Python program.",
+            "description": "Evaluate a numerical expression and return the result. Supports arithmetic (+, -, *, /, **, //, %), trig (sin, cos, tan, asin, acos, atan, atan2), log/exp (log, log10, log2, exp), constants (pi, e, tau, inf), sqrt, abs, floor, ceil, factorial, degrees/radians, and parentheses. Use this for quick numeric calculations instead of writing a full Python program. Do NOT use this to verify multi-step derivations, geometric constructions, or combinatorial counts — use run_python for those, since calculate cannot check your setup, only arithmetic.",
             "parameters": {
                 "type": "object",
                 "properties": {

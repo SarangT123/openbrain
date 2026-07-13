@@ -16,7 +16,9 @@ class ActionScreen(ModalScreen[str]):
     def on_mount(self) -> None:
         lv = self.query_one("#action-list", ListView)
         for action, label in [
+            ("agent_settings", "Agent Settings"),
             ("system_prompt", "Edit System Prompt"),
+            ("benchmark", "Run Benchmark"),
             ("sessions", "Session History"),
             ("new_session", "New Session"),
         ]:

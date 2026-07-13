@@ -12,7 +12,7 @@ from pylatexenc.latex2text import LatexNodes2Text
 from rich.markdown import Markdown
 from textual_image.widget import AutoRenderable
 
-from openbrain.config import CONFIG_DIR, TEMPLATE_DIR
+from openbrain.config import TEMPLATE_DIR
 
 
 def copy_to_clipboard(text: str) -> bool:
@@ -26,6 +26,30 @@ def copy_to_clipboard(text: str) -> bool:
 
 
 CONTEXT_PRESETS = [2048, 4096, 8192, 16384, 32768, 65536, 80000, 131072]
+
+
+def list_ollama_models() -> list[str]:
+    from ollama import Client
+
+    try:
+        return sorted(m.model for m in Client().list()["models"])
+    except Exception:
+        return []
+
+
+_HARD_KEYWORDS = (
+    "triangle", "circle", "polygon", "probability", "partition",
+    "grid", "graph", "permutation", "combinatorics", "geometric",
+    "sequence", "recurrence",
+)
+
+
+def estimate_difficulty(question_text: str, word_threshold: int, keyword_boost: bool) -> str:
+    """Returns 'hard' or 'easy'. Cheap heuristic, no model call."""
+    word_count = len(question_text.split())
+    is_long = word_count >= word_threshold
+    has_keyword = keyword_boost and any(k in question_text.lower() for k in _HARD_KEYWORDS)
+    return "hard" if (is_long or has_keyword) else "easy"
 
 
 @dataclass

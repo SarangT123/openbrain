@@ -1,10 +1,9 @@
-from ollama import Client
 from textual.app import ComposeResult
 from textual.containers import Container
 from textual.screen import ModalScreen
 from textual.widgets import Input, Label, ListItem, ListView
 
-from openbrain.utils import CONTEXT_PRESETS, ModelConfig
+from openbrain.utils import CONTEXT_PRESETS, list_ollama_models, ModelConfig
 
 
 class ModelSelectScreen(ModalScreen[ModelConfig]):
@@ -32,10 +31,7 @@ class ModelSelectScreen(ModalScreen[ModelConfig]):
         self._populate_ctx()
 
     def _fetch_models(self) -> None:
-        try:
-            self.models = sorted(m.model for m in Client().list()["models"])
-        except Exception:
-            self.models = []
+        self.models = list_ollama_models()
         list_view = self.query_one("#model-list", ListView)
         for m in self.models:
             item = ListItem(Label(m))
