@@ -73,7 +73,7 @@ class Config:
     # --- model / VRAM management ---
     keep_alive: str = "5m"
     easy_model: str = "gemma4:e4b"
-    hard_model: str = "gemma4:26B"
+    hard_model: str = "gemma4:26b"
 
     # --- self-consistency ---
     self_consistency_n_easy: int = 3
@@ -115,7 +115,7 @@ def load_config() -> Config:
             cfg.calc_guard_threshold = data.get("calc_guard_threshold", 3)
             cfg.keep_alive = data.get("keep_alive", "5m")
             cfg.easy_model = data.get("easy_model", "gemma4:e4b")
-            cfg.hard_model = data.get("hard_model", "gemma4:26B")
+            cfg.hard_model = data.get("hard_model", "gemma4:26b")
             cfg.self_consistency_n_easy = data.get("self_consistency_n_easy", 3)
             cfg.self_consistency_n_hard = data.get("self_consistency_n_hard", 1)
             cfg.routing_enabled = data.get("routing_enabled", False)

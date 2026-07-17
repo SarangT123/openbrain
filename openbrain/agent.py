@@ -1,3 +1,4 @@
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -13,6 +14,17 @@ class AgentResult:
     tool_calls: list[dict] = field(default_factory=list)
     iterations: int = 0
     model_used: str = ""
+
+
+def _resolve_args(arg_val) -> dict:
+    if isinstance(arg_val, dict):
+        return arg_val
+    if isinstance(arg_val, str):
+        try:
+            return json.loads(arg_val)
+        except json.JSONDecodeError:
+            return {}
+    return {}
 
 
 async def run_agent_turn(
@@ -31,8 +43,10 @@ async def run_agent_turn(
     force_tool_retry_limit: int = 1,
     calc_guard_enabled: bool = False,
     calc_guard_threshold: int = 3,
-    on_chunk: Optional[Callable[[str], None]] = None,
+    on_chunk: Optional[Callable[[str, str], None]] = None,
     on_tool_call: Optional[Callable[[dict], None]] = None,
+    on_tool_result: Optional[Callable[[str, str], None]] = None,
+    cancel_event: Optional[asyncio.Event] = None,
 ) -> AgentResult:
     options = {"num_ctx": num_ctx, "num_predict": num_predict if num_predict > 0 else -1, "temperature": temperature}
     if seed != -1:
@@ -45,24 +59,49 @@ async def run_agent_turn(
 
     ollama_messages = list(messages)
 
+    continuation = False
+
     while tool_iter < max_tool_iters:
+        if not continuation:
+            content_parts: list[str] = []
+            thinking_parts: list[str] = []
+
         kwargs: dict = {
             "model": model,
             "messages": ollama_messages,
-            "stream": False,
+            "stream": True,
             "options": options,
             "keep_alive": keep_alive,
         }
         if tools:
             kwargs["tools"] = tools
 
-        resp = await client.chat(**kwargs)
+        gen = await client.chat(**kwargs)
 
-        tool_calls = resp.message.tool_calls or []
+        new_tool_calls = None
+        async for part in gen:
+            if cancel_event and cancel_event.is_set():
+                content_parts.append("\n\n*[Cancelled]*")
+                break
+            if part.message.tool_calls:
+                new_tool_calls = part.message.tool_calls
+            c_chunk = getattr(part.message, "content", None) or ""
+            t_chunk = getattr(part.message, "thinking", None) or ""
+            if c_chunk:
+                content_parts.append(c_chunk)
+            if t_chunk:
+                thinking_parts.append(t_chunk)
+            if (c_chunk or t_chunk) and on_chunk:
+                on_chunk("".join(content_parts), "".join(thinking_parts))
+
+        tool_calls = new_tool_calls or []
 
         if not tool_calls:
             if force_tool_use and tool_iter == 0 and forced_retries_used < force_tool_retry_limit:
                 forced_retries_used += 1
+                content = "".join(content_parts)
+                # Fix #2: preserve the model's own answer before nudging
+                ollama_messages.append({"role": "assistant", "content": content})
                 ollama_messages.append({
                     "role": "user",
                     "content": (
@@ -72,23 +111,16 @@ async def run_agent_turn(
                     ),
                 })
                 tool_iter += 1
+                continuation = True
                 continue
             return AgentResult(
-                final_text=resp.message.content or "",
+                final_text="".join(content_parts),
                 tool_calls=tool_calls_log,
-                iterations=tool_iter,
+                iterations=tool_iter + 1,
                 model_used=model,
             )
 
-        def _resolve_args(arg_val) -> dict:
-            if isinstance(arg_val, dict):
-                return arg_val
-            if isinstance(arg_val, str):
-                try:
-                    return json.loads(arg_val)
-                except json.JSONDecodeError:
-                    return {}
-            return {}
+        content = "".join(content_parts)
 
         tool_calls_resolved = [
             {
@@ -102,7 +134,7 @@ async def run_agent_turn(
 
         ollama_messages.append({
             "role": "assistant",
-            "content": resp.message.content or "",
+            "content": content,
             "tool_calls": tool_calls_resolved,
         })
 
@@ -111,7 +143,7 @@ async def run_agent_turn(
             args = _resolve_args(tc.function.arguments)
             tool_calls_log.append({"name": fn, "args": args})
             if on_tool_call:
-                on_tool_call({"name": fn})
+                on_tool_call({"name": fn, "args": args})
             handler = TOOL_DISPATCH.get(fn)
             if fn == "calculate":
                 calc_streak += 1
@@ -122,6 +154,8 @@ async def run_agent_turn(
                 if handler
                 else f"Unknown tool: {fn}"
             )
+            if on_tool_result:
+                on_tool_result(fn, result)
             ollama_messages.append({
                 "role": "tool",
                 "content": result,
@@ -139,6 +173,7 @@ async def run_agent_turn(
                 ),
             })
 
+        continuation = False
         tool_iter += 1
 
     return AgentResult(

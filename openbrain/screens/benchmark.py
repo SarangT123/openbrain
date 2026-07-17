@@ -1,3 +1,5 @@
+import json
+
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal
 from textual.screen import ModalScreen
@@ -56,5 +58,13 @@ class BenchmarkScreen(ModalScreen[None]):
         cfg = self.app._cfg
         from openbrain.benchmark_runner import run_benchmark_suite
 
-        async for line in run_benchmark_suite(cfg, self.app.client):
-            log.write(line)
+        try:
+            async for line in run_benchmark_suite(cfg, self.app.client):
+                log.write(line)
+        except FileNotFoundError as e:
+            log.write(f"[red]ERROR: File not found: {e}[/red]")
+            log.write("[yellow]Ensure benchmarks/questions.json and benchmarks/answers.json exist.[/yellow]")
+        except json.JSONDecodeError as e:
+            log.write(f"[red]ERROR: Invalid JSON in question bank or answer key: {e}[/red]")
+        except Exception as e:
+            log.write(f"[red]ERROR: {e}[/red]")

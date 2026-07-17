@@ -14,6 +14,12 @@ BENCHMARKS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _extract_final_answer(text: str) -> str:
+    m = re.search(r"FINAL ANSWER:\s*(\d{1,3})", text, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    matches = re.findall(r"(?:^|\n)\s*(\d{1,3})\s*$", text, re.MULTILINE)
+    if matches:
+        return matches[-1]
     matches = re.findall(r"\b(\d{1,3})\b", text)
     return matches[-1] if matches else ""
 
@@ -30,14 +36,14 @@ def _save_session(q_id: str, model: str, votes: list[str], majority: str) -> Non
     path.write_text(json.dumps(data, indent=2))
 
 
-def _append_to_benchmark_csv(q_id: str, model: str, answer: str, correct: bool) -> None:
+def _append_to_benchmark_csv(q_id: str, model: str, answer: str, expected: str, correct: bool) -> None:
     csv_path = BENCHMARKS_DIR / "benchmark.csv"
     is_new = not csv_path.exists()
     with open(csv_path, "a", newline="") as f:
         writer = csv.writer(f)
         if is_new:
-            writer.writerow(["QN", "Model", "AI ans", "Correct", "RIGHT?WRONG"])
-        writer.writerow([q_id, model, answer, answer, 1 if correct else 0])
+            writer.writerow(["QN", "Model", "AI ans", "Expected", "RIGHT?WRONG"])
+        writer.writerow([q_id, model, answer, expected, 1 if correct else 0])
 
 
 async def run_benchmark_suite(cfg, client):
@@ -56,7 +62,8 @@ async def run_benchmark_suite(cfg, client):
 
     for model, batch in batches.items():
         yield f"[bold]Switching to {model}[/bold] — {len(batch)} question(s)"
-        n_votes = cfg.self_consistency_n_hard if model == cfg.hard_model else cfg.self_consistency_n_easy
+        is_hard = model.lower() == cfg.hard_model.lower()
+        n_votes = cfg.self_consistency_n_hard if is_hard else cfg.self_consistency_n_easy
 
         for q in batch:
             votes = []
@@ -87,7 +94,8 @@ async def run_benchmark_suite(cfg, client):
             _save_session(q["id"], model, votes, majority)
 
             if cfg.auto_grade and q["id"] in answer_key:
-                correct = grade_answer(majority, answer_key[q["id"]])
-                _append_to_benchmark_csv(q["id"], model, majority, correct)
+                expected = answer_key[q["id"]]
+                correct = grade_answer(majority, expected)
+                _append_to_benchmark_csv(q["id"], model, majority, expected, correct)
                 mark = "[green]✓[/green]" if correct else "[red]✗[/red]"
-                yield f"  {q['id']}: {mark} (majority={majority}, expected={answer_key[q['id']]})"
+                yield f"  {q['id']}: {mark} (majority={majority}, expected={expected})"

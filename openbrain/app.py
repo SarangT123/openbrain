@@ -12,8 +12,9 @@ from textual.containers import Container, ScrollableContainer
 from textual.reactive import reactive
 from textual.widgets import Footer, Header, Input, Label, TextArea
 
+from openbrain.agent import run_agent_turn
 from openbrain.config import DATA_DIR, DEFAULT_SYSTEM_PROMPT, load_config, save_config_to_disk
-from openbrain.tools import TOOLS, TOOL_DISPATCH
+from openbrain.tools import TOOLS
 from openbrain.screens.action import ActionScreen
 from openbrain.screens.agent_settings import AgentSettingsScreen
 from openbrain.screens.benchmark import BenchmarkScreen
@@ -220,6 +221,7 @@ class OpenCodeTUI(App):
         width: 30;
         color: #a6adc8;
     }
+    AgentSettingsScreen Switch,
     BenchmarkScreen Switch {
         margin-left: 30;
     }
@@ -809,178 +811,72 @@ class OpenCodeTUI(App):
                 entry["images"] = m["images"]
             ollama_messages.append(entry)
 
-        raw_buffer = ""
-        tool_iter = 0
-        max_tool_iters = 10
-        forced_retries_used = 0
-        calc_streak = 0
+        content_buffer = ""
+        thinking_buffer = ""
+
+        def _on_chunk(content: str, thinking: str) -> None:
+            nonlocal content_buffer, thinking_buffer
+            content_buffer = content
+            thinking_buffer = thinking
+            if thinking:
+                clean = content
+                is_thinking = not bool(clean)
+                widget.update_content(
+                    content=clean, thinking=thinking,
+                    show_thinking=self.show_thinking,
+                    is_thinking=is_thinking,
+                )
+            else:
+                t, clean, is_thinking = self._parse_thinking(content)
+                widget.update_content(
+                    content=clean, thinking=t,
+                    show_thinking=self.show_thinking,
+                    is_thinking=is_thinking,
+                )
+            container = self.query_one("#chat-container", ScrollableContainer)
+            container.scroll_end(animate=False)
+            self._update_context_bar()
+
+        def _on_tool_call(tc: dict) -> None:
+            widget.add_tool_call(tc.get("name", ""), tc.get("args", {}))
+
+        def _on_tool_result(fn: str, _result: str) -> None:
+            widget.set_tool_done(fn)
 
         try:
-            thinking_blocks: list[str] = []
-            content_blocks: list[str] = []
-            iter_buffer = ""
-            needs_reset = True
+            result = await run_agent_turn(
+                self.client, self.current_model, ollama_messages, TOOLS,
+                temperature=self._cfg.temperature,
+                seed=self._cfg.seed,
+                num_ctx=self.current_ctx,
+                num_predict=self.current_predict,
+                keep_alive=self._cfg.keep_alive,
+                force_tool_use=self._cfg.force_tool_use,
+                force_tool_retry_limit=self._cfg.force_tool_retry_limit,
+                calc_guard_enabled=self._cfg.calc_guard_enabled,
+                calc_guard_threshold=self._cfg.calc_guard_threshold,
+                on_chunk=_on_chunk,
+                on_tool_call=_on_tool_call,
+                on_tool_result=_on_tool_result,
+                cancel_event=self._cancel_stream,
+            )
 
-            while tool_iter < max_tool_iters:
-                if needs_reset:
-                    thinking_blocks.clear()
-                    content_blocks.clear()
-                    iter_buffer = ""
-                needs_reset = True
-                tool_calls = None
+            for tc in result.tool_calls:
+                widget.set_tool_done(tc["name"])
 
-                kwargs: dict = {
-                    "model": self.current_model,
-                    "messages": ollama_messages,
-                    "stream": True,
-                    "options": {"num_ctx": self.current_ctx, "num_predict": self.current_predict if self.current_predict > 0 else -1, "temperature": self._cfg.temperature},
-                    "keep_alive": self._cfg.keep_alive,
-                }
-                if self._cfg.seed != -1:
-                    kwargs["options"]["seed"] = self._cfg.seed
-                if TOOLS:
-                    kwargs["tools"] = TOOLS
+            final_text = result.final_text.replace("<channel|>", "")
+            content_buffer = content_buffer.replace("<channel|>", "")
+            msg["content"] = final_text
+            msg["raw"] = content_buffer
+            msg["tool_calls_executed"] = result.tool_calls
+            if thinking_buffer:
+                msg["thinking"] = thinking_buffer
+            else:
+                t, clean, _ = self._parse_thinking(final_text)
+                if t:
+                    msg["thinking"] = t
+                    msg["content"] = clean
 
-                gen = await self.client.chat(**kwargs)
-                done_reason = "stop"
-                async for part in gen:
-                    if self._cancel_stream.is_set():
-                        iter_buffer += "\n\n*[Cancelled]*"
-                        done_reason = "cancel"
-                        break
-                    if part.message.tool_calls:
-                        tool_calls = part.message.tool_calls
-                    done_reason = getattr(part, "done_reason", "stop") or "stop"
-                    t_chunk = getattr(part.message, "thinking", None) or ""
-                    c_chunk = getattr(part.message, "content", None) or ""
-                    if t_chunk:
-                        thinking_blocks.append(t_chunk)
-                    if c_chunk:
-                        c_chunk = c_chunk.replace("<channel|>", "")
-                        content_blocks.append(c_chunk)
-                        iter_buffer += c_chunk
-                    if t_chunk or c_chunk:
-                        thinking = "".join(thinking_blocks).strip()
-                        if not thinking:
-                            if iter_buffer.strip():
-                                thinking, clean, is_thinking = self._parse_thinking(iter_buffer)
-                            else:
-                                clean = ""
-                                is_thinking = False
-                        else:
-                            clean = "".join(content_blocks).strip()
-                            is_thinking = not bool(clean)
-                        msg["thinking"] = thinking
-                        msg["content"] = clean
-                        msg["is_thinking"] = is_thinking
-                        widget.update_content(
-                            content=clean, thinking=thinking,
-                            show_thinking=self.show_thinking,
-                            is_thinking=is_thinking,
-                        )
-                        if len(raw_buffer + iter_buffer) % 20 == 0:
-                            container = self.query_one("#chat-container", ScrollableContainer)
-                            container.scroll_end(animate=False)
-                            self._update_context_bar()
-
-                if not tool_calls:
-                    raw_buffer += iter_buffer
-                    if self._cfg.force_tool_use and tool_iter == 0 and forced_retries_used < self._cfg.force_tool_retry_limit:
-                        forced_retries_used += 1
-                        ollama_messages.append({
-                            "role": "user",
-                            "content": (
-                                "You answered without calling any tool. Re-derive this "
-                                "step by step, calling run_python or sympy_calc to verify "
-                                "each step, before giving your final answer."
-                            ),
-                        })
-                        tool_iter += 1
-                        needs_reset = False
-                        continue
-                    if done_reason == "length" and (iter_buffer.strip() or "".join(thinking_blocks).strip()):
-                        content = iter_buffer.strip()
-                        thinking_text = "".join(thinking_blocks).strip()
-                        entry = {"role": "assistant", "content": content}
-                        if thinking_text:
-                            entry["thinking"] = thinking_text
-                        ollama_messages.append(entry)
-                        msg["content"] = content
-                        msg["thinking"] = thinking_text
-                        msg["is_thinking"] = bool(thinking_text) and not bool(content)
-                        widget.update_content(
-                            content=content, thinking=thinking_text,
-                            show_thinking=self.show_thinking,
-                            is_thinking=msg["is_thinking"],
-                        )
-                        needs_reset = False
-                        tool_iter += 1
-                        continue
-                    break
-
-                def _resolve_args(arg_val) -> dict:
-                    if isinstance(arg_val, dict):
-                        return arg_val
-                    if isinstance(arg_val, str):
-                        try:
-                            return json.loads(arg_val)
-                        except json.JSONDecodeError:
-                            return {}
-                    return {}
-
-                assistant_msg = {
-                    "role": "assistant",
-                    "content": "".join(content_blocks).strip(),
-                    "tool_calls": [
-                        {
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": _resolve_args(tc.function.arguments),
-                            }
-                        }
-                        for tc in tool_calls
-                    ],
-                }
-                ollama_messages.append(assistant_msg)
-
-                for tc in tool_calls:
-                    fn = tc.function.name
-                    args = _resolve_args(tc.function.arguments)
-                    widget.add_tool_call(fn, args)
-                    if fn == "calculate":
-                        calc_streak += 1
-                    elif fn in ("run_python", "sympy_calc"):
-                        calc_streak = 0
-                    handler = TOOL_DISPATCH.get(fn)
-                    result = (
-                        await handler(**args)
-                        if handler
-                        else f"Unknown tool: {fn}"
-                    )
-                    widget.set_tool_done(fn)
-                    ollama_messages.append({
-                        "role": "tool",
-                        "content": result,
-                        "name": fn,
-                    })
-
-                if self._cfg.calc_guard_enabled and calc_streak >= self._cfg.calc_guard_threshold:
-                    calc_streak = 0
-                    ollama_messages.append({
-                        "role": "user",
-                        "content": (
-                            "You've used calculate several times without verifying with "
-                            "run_python — brute-force or simulate this to confirm your "
-                            "derivation."
-                        ),
-                    })
-
-                msg["tool_calls_executed"] = [
-                    {"name": tc["name"], "args": tc["args"]}
-                    for tc in widget._tool_calls
-                ]
-                raw_buffer += iter_buffer
-                tool_iter += 1
         except Exception as e:
             err_msg = str(e)
             if "out of memory" in err_msg.lower() or "oom" in err_msg.lower():
@@ -990,16 +886,12 @@ class OpenCodeTUI(App):
                     "Try a smaller model, set keep_alive='0' to unload other models, "
                     "or free system memory."
                 )
-            content_blocks = [raw_buffer] if raw_buffer else []
-            content_blocks.append(f"\n\n**Error:** {err_msg}")
-            re_buffer = raw_buffer + f"\n\n**Error:** {err_msg}"
-            re_thinking, re_clean, _ = self._parse_thinking(re_buffer)
+            content_buffer += f"\n\n**Error:** {err_msg}"
+            re_thinking, re_clean, _ = self._parse_thinking(content_buffer)
             msg["thinking"] = re_thinking
             msg["content"] = re_clean
             widget.update_content(content=re_clean, thinking=re_thinking)
 
-        raw_buffer = raw_buffer.replace("<channel|>", "")
-        msg["raw"] = raw_buffer
         container = self.query_one("#chat-container", ScrollableContainer)
         container.scroll_end(animate=False)
         self._update_context_bar()
