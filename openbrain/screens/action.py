@@ -18,6 +18,7 @@ class ActionScreen(ModalScreen[str]):
         for action, label in [
             ("agent_settings", "Agent Settings"),
             ("system_prompt", "Edit System Prompt"),
+            ("prompt_presets", "Prompt Presets"),
             ("benchmark", "Run Benchmark"),
             ("sessions", "Session History"),
             ("new_session", "New Session"),

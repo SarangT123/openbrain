@@ -47,6 +47,37 @@ DEFAULT_SYSTEM_PROMPT = """You are a precise AI coding assistant with access to 
    - Algebra: simplify with `sympy_calc`, evaluate with `calculate`, verify with `run_python`
 """
 
+MATH_BENCHMARK_PROMPT = """You are solving competition-style math problems. Follow these rules strictly:
+1. Never answer from intuition alone — verify every non-trivial step with a tool
+   (run_python or sympy_calc for anything beyond basic arithmetic; calculate only
+   for final numeric evaluation of an already-derived expression).
+2. For combinatorics, geometry, or number theory: brute-force or simulate small
+   cases with run_python before committing to a closed-form answer.
+3. Show your derivation, then end your response with a line in exactly this
+   format, nothing after it: FINAL ANSWER: <integer>
+"""
+
+CONCISE_CODING_PROMPT = """You are a terse coding assistant. Answer with code and
+the minimum prose needed to explain it. No preamble, no restating the question,
+no "Here's how you can..." — just the solution and, if needed, one line on why."""
+
+CASUAL_PROMPT = """You are a helpful, conversational assistant. Think out loud,
+explore ideas freely, and don't force tool calls unless they're actually needed."""
+
+SYSTEM_PROMPT_PRESETS: list[tuple[str, str]] = [
+    ("Default", DEFAULT_SYSTEM_PROMPT),
+    ("Math/Benchmark", MATH_BENCHMARK_PROMPT),
+    ("Concise Coding", CONCISE_CODING_PROMPT),
+    ("Casual", CASUAL_PROMPT),
+]
+
+
+def preset_by_name(name: str) -> str | None:
+    for n, prompt in SYSTEM_PROMPT_PRESETS:
+        if n == name:
+            return prompt
+    return None
+
 
 @dataclass
 class Config:
@@ -83,6 +114,9 @@ class Config:
     routing_enabled: bool = False
     routing_word_threshold: int = 200
     routing_keyword_boost: bool = True
+
+    # --- prompt presets ---
+    active_preset: str = "Default"
 
     # --- benchmark / grading ---
     question_bank_path: str = "benchmarks/questions.json"
@@ -121,6 +155,7 @@ def load_config() -> Config:
             cfg.routing_enabled = data.get("routing_enabled", False)
             cfg.routing_word_threshold = data.get("routing_word_threshold", 200)
             cfg.routing_keyword_boost = data.get("routing_keyword_boost", True)
+            cfg.active_preset = data.get("active_preset", "Default")
             cfg.question_bank_path = data.get("question_bank_path", "benchmarks/questions.json")
             cfg.answer_key_path = data.get("answer_key_path", "benchmarks/answers.json")
             cfg.auto_grade = data.get("auto_grade", False)
@@ -160,6 +195,7 @@ def save_config_to_disk(cfg: Config) -> None:
     lines.append(f"routing_enabled = {'true' if cfg.routing_enabled else 'false'}")
     lines.append(f"routing_word_threshold = {cfg.routing_word_threshold}")
     lines.append(f"routing_keyword_boost = {'true' if cfg.routing_keyword_boost else 'false'}")
+    lines.append(f'active_preset = "{cfg.active_preset}"')
     lines.append(f'question_bank_path = "{cfg.question_bank_path}"')
     lines.append(f'answer_key_path = "{cfg.answer_key_path}"')
     lines.append(f"auto_grade = {'true' if cfg.auto_grade else 'false'}")

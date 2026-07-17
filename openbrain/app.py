@@ -23,6 +23,7 @@ from openbrain.screens.model_select import ModelSelectScreen
 from openbrain.screens.session_list import SessionListScreen
 from openbrain.screens.rename_session import RenameSessionScreen
 from openbrain.screens.system_prompt import SystemPromptScreen
+from openbrain.screens.prompt_preset import PromptPresetScreen
 from openbrain.screens.template_select import TemplateSelectScreen
 from openbrain.utils import (
     ModelConfig,
@@ -323,6 +324,8 @@ class OpenCodeTUI(App):
         Binding("ctrl+left", "predict_down", "Pred-", show=False),
         Binding("ctrl+right", "predict_up", "Pred+", show=False),
         Binding("ctrl+enter", "submit_input", "Send", show=False),
+        Binding("ctrl+e", "cycle_prompt_preset", "Prompt"),
+        Binding("ctrl+shift+e", "prompt_presets", "Presets"),
     ]
 
     current_model: reactive[str] = reactive("")
@@ -563,6 +566,8 @@ class OpenCodeTUI(App):
             self.push_screen(AgentSettingsScreen(), callback=self.on_agent_settings_dismissed)
         elif action == "benchmark":
             self.push_screen(BenchmarkScreen(), callback=self.on_benchmark_screen_dismissed)
+        elif action == "prompt_presets":
+            self.action_prompt_presets()
 
     def action_new_session(self) -> None:
         if self._cfg.save_history and self.messages:
@@ -621,6 +626,37 @@ class OpenCodeTUI(App):
             save_config_to_disk(self._cfg)
             self.notify("System prompt updated", title="System Prompt")
             self._update_context_bar()
+
+    def _apply_preset(self, name: str, prompt: str) -> None:
+        self.system_prompt = prompt
+        self._cfg.system_prompt = prompt
+        self._cfg.active_preset = name
+        save_config_to_disk(self._cfg)
+        self._update_context_bar()
+        self.notify(f"System prompt: {name}", title="Prompt Preset")
+
+    def action_cycle_prompt_preset(self) -> None:
+        from openbrain.config import SYSTEM_PROMPT_PRESETS
+
+        names = [n for n, _ in SYSTEM_PROMPT_PRESETS]
+        try:
+            current_idx = names.index(self._cfg.active_preset)
+        except ValueError:
+            current_idx = -1
+        next_idx = (current_idx + 1) % len(SYSTEM_PROMPT_PRESETS)
+        name, prompt = SYSTEM_PROMPT_PRESETS[next_idx]
+        self._apply_preset(name, prompt)
+
+    def action_prompt_presets(self) -> None:
+        self.push_screen(PromptPresetScreen(), callback=self._on_preset_picker)
+
+    def _on_preset_picker(self, name: str | None) -> None:
+        if name is None:
+            return
+        from openbrain.config import preset_by_name
+        prompt = preset_by_name(name)
+        if prompt is not None:
+            self._apply_preset(name, prompt)
 
     def on_agent_settings_dismissed(self, data: dict | None) -> None:
         if data is not None:
@@ -997,6 +1033,7 @@ class OpenCodeTUI(App):
             "  Ctrl+M   Change model\n"
             "  Ctrl+L   Clear chat\n"
             "  Ctrl+P   System prompt\n"
+            "  Ctrl+E   Cycle prompt preset\n"
             "  Ctrl+G   Paste image\n"
             "  Ctrl+R   Toggle thinking\n"
             "  Ctrl+K   Cancel streaming\n"
