@@ -14,6 +14,7 @@ class AgentResult:
     tool_calls: list[dict] = field(default_factory=list)
     iterations: int = 0
     model_used: str = ""
+    final_answer: str = ""
 
 
 def _resolve_args(arg_val) -> dict:
@@ -25,6 +26,28 @@ def _resolve_args(arg_val) -> dict:
         except json.JSONDecodeError:
             return {}
     return {}
+
+
+async def _extract_structured_answer(
+    client: AsyncClient,
+    model: str,
+    messages: list[dict],
+    options: dict,
+    keep_alive: str,
+) -> str:
+    try:
+        resp = await client.chat(
+            model=model,
+            messages=messages + [{"role": "user", "content": "State your final numeric answer only."}],
+            stream=False,
+            options=options,
+            keep_alive=keep_alive,
+            format={"type": "object", "properties": {"answer": {"type": "integer"}}, "required": ["answer"]},
+        )
+        parsed = json.loads(resp.message.content)
+        return str(parsed["answer"])
+    except Exception:
+        return ""
 
 
 async def run_agent_turn(
@@ -43,6 +66,7 @@ async def run_agent_turn(
     force_tool_retry_limit: int = 1,
     calc_guard_enabled: bool = False,
     calc_guard_threshold: int = 3,
+    structured_final_answer: bool = False,
     on_chunk: Optional[Callable[[str, str], None]] = None,
     on_tool_call: Optional[Callable[[dict], None]] = None,
     on_tool_result: Optional[Callable[[str, str], None]] = None,
@@ -60,6 +84,18 @@ async def run_agent_turn(
     ollama_messages = list(messages)
 
     continuation = False
+
+    async def _build_result(final_text: str, iterations: int) -> AgentResult:
+        final_answer = ""
+        if structured_final_answer:
+            final_answer = await _extract_structured_answer(client, model, ollama_messages, options, keep_alive)
+        return AgentResult(
+            final_text=final_text,
+            tool_calls=tool_calls_log,
+            iterations=iterations,
+            model_used=model,
+            final_answer=final_answer,
+        )
 
     while tool_iter < max_tool_iters:
         if not continuation:
@@ -100,7 +136,6 @@ async def run_agent_turn(
             if force_tool_use and tool_iter == 0 and forced_retries_used < force_tool_retry_limit:
                 forced_retries_used += 1
                 content = "".join(content_parts)
-                # Fix #2: preserve the model's own answer before nudging
                 ollama_messages.append({"role": "assistant", "content": content})
                 ollama_messages.append({
                     "role": "user",
@@ -113,12 +148,7 @@ async def run_agent_turn(
                 tool_iter += 1
                 continuation = True
                 continue
-            return AgentResult(
-                final_text="".join(content_parts),
-                tool_calls=tool_calls_log,
-                iterations=tool_iter + 1,
-                model_used=model,
-            )
+            return await _build_result("".join(content_parts), tool_iter + 1)
 
         content = "".join(content_parts)
 
@@ -176,9 +206,4 @@ async def run_agent_turn(
         continuation = False
         tool_iter += 1
 
-    return AgentResult(
-        final_text="[max tool iterations reached]",
-        tool_calls=tool_calls_log,
-        iterations=tool_iter,
-        model_used=model,
-    )
+    return await _build_result("[max tool iterations reached]", tool_iter)

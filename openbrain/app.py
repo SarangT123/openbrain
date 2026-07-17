@@ -236,6 +236,14 @@ class OpenCodeTUI(App):
         height: 10;
         margin-top: 1;
     }
+    BenchmarkScreen #bench-live {
+        background: #181825;
+        color: #a6adc8;
+        border: solid #45475a;
+        height: 6;
+        margin-top: 1;
+        overflow-y: auto;
+    }
     ModelSelectScreen ListView,
     BranchSelectScreen ListView,
     TemplateSelectScreen ListView,

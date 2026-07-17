@@ -3,6 +3,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import Callable, Optional
 
 from openbrain.agent import run_agent_turn
 from openbrain.grading import grade_answer
@@ -46,7 +47,12 @@ def _append_to_benchmark_csv(q_id: str, model: str, answer: str, expected: str, 
         writer.writerow([q_id, model, answer, expected, 1 if correct else 0])
 
 
-async def run_benchmark_suite(cfg, client):
+async def run_benchmark_suite(
+    cfg,
+    client,
+    on_chunk: Optional[Callable[[str, str], None]] = None,
+    on_tool_call: Optional[Callable[[dict], None]] = None,
+):
     with open(cfg.question_bank_path) as f:
         questions = json.load(f)
 
@@ -68,6 +74,8 @@ async def run_benchmark_suite(cfg, client):
         for q in batch:
             votes = []
             for i in range(n_votes):
+                yield "__CLEAR_LIVE__"
+                yield f"[dim]Solving {q['id']} (vote {i+1}/{n_votes})...[/dim]"
                 try:
                     result = await run_agent_turn(
                         client, model,
@@ -80,13 +88,16 @@ async def run_benchmark_suite(cfg, client):
                         force_tool_retry_limit=cfg.force_tool_retry_limit,
                         calc_guard_enabled=cfg.calc_guard_enabled,
                         calc_guard_threshold=cfg.calc_guard_threshold,
+                        structured_final_answer=True,
+                        on_chunk=on_chunk,
+                        on_tool_call=on_tool_call,
                     )
                 except Exception as e:
                     yield f"  [red]ERROR on {q['id']}[/red]: {e}"
                     votes.append("")
                     continue
 
-                answer = _extract_final_answer(result.final_text)
+                answer = result.final_answer or _extract_final_answer(result.final_text)
                 votes.append(answer)
                 yield f"  {q['id']} vote {i+1}/{n_votes}: {answer}"
 
